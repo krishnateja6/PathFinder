@@ -9,5 +9,8 @@
 ## Workflow
 - Work one phase at a time per `codebase-intelligence-assistant-spec.md` — do not start the next phase
   until the current one is committed
-- Run pytest before proposing a commit; do not commit failing tests
+- Run pytest before committing; do not commit failing tests
+- After a phase's tests pass, commit and push to `origin main` without waiting to be asked,
+  then stop, report what phase was completed and what was committed, and wait before
+  starting the next phase
 - Ask before modifying files outside the phase currently in progress
