@@ -79,6 +79,21 @@ def parse_file(file_path: Path, rel_path: str, parser: Parser | None = None) -> 
     return chunks
 
 
+def parse_file_with_nodes(file_path: Path, rel_path: str, parser: Parser | None = None) -> list[tuple[CodeChunk, Node]]:
+    """Like `parse_file`, but also returns each chunk's tree-sitter def node.
+
+    Used by the graph builder, which needs to inspect a chunk's own AST
+    (call expressions, class bases) without re-implementing this walk.
+    """
+    parser = parser or new_parser()
+    source = Path(file_path).read_bytes()
+    tree = parser.parse(source)
+    chunks: list[CodeChunk] = []
+    nodes: list[Node] = []
+    _walk(tree.root_node, scope_parts=[], parent_kind=None, rel_path=rel_path, source=source, chunks=chunks, nodes=nodes)
+    return list(zip(chunks, nodes))
+
+
 def _walk(
     node: Node,
     scope_parts: list[str],
@@ -86,6 +101,7 @@ def _walk(
     rel_path: str,
     source: bytes,
     chunks: list[CodeChunk],
+    nodes: list[Node] | None = None,
 ) -> None:
     for child in node.named_children:
         outer_node = child
@@ -100,7 +116,7 @@ def _walk(
             # Recurse into control-flow blocks (if/for/try/with, ...) since a
             # def nested inside one is still effectively at this scope level.
             if child.named_children:
-                _walk(child, scope_parts, parent_kind, rel_path, source, chunks)
+                _walk(child, scope_parts, parent_kind, rel_path, source, chunks, nodes)
             continue
 
         name_node = def_node.child_by_field_name("name")
@@ -115,6 +131,8 @@ def _walk(
             kind = "function"
 
         chunks.append(_build_chunk(def_node, outer_node, name, qualified_name, kind, rel_path, source))
+        if nodes is not None:
+            nodes.append(def_node)
 
         body = def_node.child_by_field_name("body")
         if body is not None:
@@ -124,7 +142,7 @@ def _walk(
             else:
                 next_scope = [*scope_parts, name, "<locals>"]
                 next_kind = "function"
-            _walk(body, next_scope, next_kind, rel_path, source, chunks)
+            _walk(body, next_scope, next_kind, rel_path, source, chunks, nodes)
 
 
 def _build_chunk(
