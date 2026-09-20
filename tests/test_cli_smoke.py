@@ -104,3 +104,50 @@ def test_ask_command_flags_a_fabricated_citation(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "run() returns 1, defined at a.py:1." in result.output
     assert "a.py:999. [UNVERIFIED CITATION]" in result.output
+
+
+def test_impact_command_reports_missing_index(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["impact", "run"])
+
+    assert result.exit_code == 1
+    assert "codeintel index" in result.output
+
+
+def test_impact_command_reports_unknown_symbol(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repo_id = str(tmp_path.resolve())
+    graph_store.save_graph(nx.MultiDiGraph(), repo_id)
+
+    result = runner.invoke(app, ["impact", "does_not_exist"])
+
+    assert result.exit_code == 1
+    assert "No function, class, or file" in result.output
+
+
+def test_impact_command_prints_affected_call_sites(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repo_id = str(tmp_path.resolve())
+
+    g = nx.MultiDiGraph()
+    g.add_node("a.py::run:1", type="function", kind="function", name="run", qualified_name="run", file="a.py", start_line=1, end_line=2)
+    g.add_node(
+        "a.py::helper:5",
+        type="function",
+        kind="function",
+        name="helper",
+        qualified_name="helper",
+        file="a.py",
+        start_line=5,
+        end_line=6,
+    )
+    g.add_edge("a.py::run:1", "a.py::helper:5", type="CALLS")
+    graph_store.save_graph(g, repo_id)
+
+    result = runner.invoke(app, ["impact", "helper"])
+
+    assert result.exit_code == 0
+    assert "Changing helper (a.py:5):" in result.output
+    assert "1 affected call site(s):" in result.output
+    assert "run (a.py:1) [calls]" in result.output

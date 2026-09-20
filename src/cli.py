@@ -6,6 +6,7 @@ import typer
 from src.agent.loop import ClaudeClient, run_agent
 from src.agent.tools import AgentContext
 from src.agent.verify import annotate_answer, verify_answer
+from src.analysis.impact import compute_impact
 from src.indexer.embedder import VoyageEmbeddingClient
 from src.indexer.pipeline import index_repo
 from src.storage import db, graph_store
@@ -119,8 +120,37 @@ def ask(question: str) -> None:
 
 @app.command()
 def impact(symbol: str) -> None:
-    """Show call sites affected by changing a function/class/file."""
-    raise NotImplementedError("impact: implemented in Phase 5")
+    """Show call sites affected by changing a function/class/file.
+
+    Operates on the repo rooted at the current directory — run
+    `codeintel index .` from that repo first.
+    """
+    repo_id = str(Path.cwd().resolve())
+    if not graph_store.has_graph(repo_id):
+        typer.secho(
+            f"No graph found for {repo_id}. Run `codeintel index .` from this directory first.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    g = graph_store.load_graph(repo_id)
+    result = compute_impact(g, symbol)
+
+    if not result.targets:
+        typer.secho(f"No function, class, or file named '{symbol}' found in the graph.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    target_desc = ", ".join(f"{t.qualified_name} ({t.file}:{t.start_line})" for t in result.targets)
+    typer.echo(f"Changing {target_desc}:")
+
+    if not result.affected:
+        typer.echo("  No call sites depend on this.")
+        return
+
+    typer.echo(f"  {len(result.affected)} affected call site(s):")
+    for a in result.affected:
+        typer.echo(f"    - {a.qualified_name} ({a.file}:{a.start_line}) [{a.via}]")
 
 
 @app.command()
