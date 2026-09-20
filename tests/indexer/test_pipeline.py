@@ -1,0 +1,39 @@
+from pathlib import Path
+
+from src.indexer.pipeline import index_repo
+from src.storage import db
+
+FIXTURES = Path(__file__).parents[2] / "fixtures"
+
+
+class FakeEmbeddingClient:
+    """Returns a fixed 3-dim vector, matching the test schema's embedding_dim."""
+
+    def embed(self, texts: list[str], model: str, input_type: str) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+
+def test_index_repo_summarizes_chunk_counts(pg_conn):
+    summary = index_repo(FIXTURES / "simple_pkg", FakeEmbeddingClient(), pg_conn, repo_id="test-simple-pkg")
+
+    assert summary.total_chunks == 12
+    assert summary.functions == 3  # add, multiply, run
+    assert summary.methods == 6
+    assert summary.classes == 3  # Calculator, Animal, Dog
+
+
+def test_index_repo_stores_chunks_searchable_by_repo(pg_conn):
+    index_repo(FIXTURES / "simple_pkg", FakeEmbeddingClient(), pg_conn, repo_id="test-simple-pkg")
+
+    results = db.semantic_search(pg_conn, "test-simple-pkg", query_vector=[1.0, 0.0, 0.0], limit=100)
+
+    assert len(results) == 12
+    assert {r["qualified_name"] for r in results if r["kind"] == "class"} == {"Calculator", "Animal", "Dog"}
+
+
+def test_index_repo_is_a_full_reindex_not_additive(pg_conn):
+    index_repo(FIXTURES / "simple_pkg", FakeEmbeddingClient(), pg_conn, repo_id="test-simple-pkg")
+    index_repo(FIXTURES / "simple_pkg", FakeEmbeddingClient(), pg_conn, repo_id="test-simple-pkg")
+
+    results = db.semantic_search(pg_conn, "test-simple-pkg", query_vector=[1.0, 0.0, 0.0], limit=100)
+    assert len(results) == 12  # re-indexing doesn't duplicate rows
