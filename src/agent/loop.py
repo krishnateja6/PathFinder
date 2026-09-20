@@ -146,8 +146,22 @@ class AgentAnswer:
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
-def run_agent(question: str, ctx: AgentContext, llm: LLMClient, max_turns: int = MAX_TURNS) -> AgentAnswer:
-    """Run the tool-use loop until Claude gives a final text answer (or `max_turns` runs out)."""
+def run_agent(
+    question: str,
+    ctx: AgentContext,
+    llm: LLMClient,
+    max_turns: int = MAX_TURNS,
+    dispatch: dict[str, Any] | None = None,
+) -> AgentAnswer:
+    """Run the tool-use loop until Claude gives a final text answer (or `max_turns` runs out).
+
+    `dispatch` overrides the default tool-name → handler mapping. This
+    exists so a caller whose AgentContext can't support every tool as-is
+    (e.g. a deployment with no Postgres connection) can swap in an
+    alternate implementation — of `semantic_search`, say — while reusing
+    this loop and the other four tools unchanged.
+    """
+    dispatch = dispatch if dispatch is not None else _DISPATCH
     messages: list[dict] = [{"role": "user", "content": question}]
     tool_calls: list[ToolCall] = []
 
@@ -163,7 +177,7 @@ def run_agent(question: str, ctx: AgentContext, llm: LLMClient, max_turns: int =
 
         tool_results = []
         for block in tool_use_blocks:
-            handler = _DISPATCH.get(block.name)
+            handler = dispatch.get(block.name)
             if handler is None:
                 result: Any = {"error": f"unknown tool: {block.name}"}
             else:

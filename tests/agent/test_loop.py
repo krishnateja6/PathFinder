@@ -132,3 +132,32 @@ def test_run_agent_gives_up_after_max_turns():
 
     assert "gave up" in answer.text.lower()
     assert len(answer.tool_calls) == 2
+
+
+def test_run_agent_uses_a_custom_dispatch_when_given_one():
+    """A caller whose AgentContext can't support every default tool (e.g. no
+    Postgres connection) can override just the tools it needs to replace."""
+    llm = FakeLLMClient(
+        [
+            _tool_use(("semantic_search", {"query": "anything"}, "call_1")),
+            _text("Done."),
+        ]
+    )
+    custom_dispatch = {"semantic_search": lambda ctx, args: [{"qualified_name": "stubbed_result"}]}
+
+    answer = run_agent("Search for something.", _ctx(), llm, dispatch=custom_dispatch)
+
+    assert answer.tool_calls[0].result == [{"qualified_name": "stubbed_result"}]
+
+
+def test_run_agent_default_dispatch_is_unchanged_when_no_override_given():
+    llm = FakeLLMClient(
+        [
+            _tool_use(("find_definition", {"symbol": "Calculator"}, "call_1")),
+            _text("Done."),
+        ]
+    )
+
+    answer = run_agent("Where is Calculator?", _ctx(), llm)
+
+    assert answer.tool_calls[0].result[0]["file"] == "utils.py"
