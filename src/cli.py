@@ -5,6 +5,7 @@ import typer
 
 from src.agent.loop import ClaudeClient, run_agent
 from src.agent.tools import AgentContext
+from src.agent.verify import annotate_answer, verify_answer
 from src.indexer.embedder import VoyageEmbeddingClient
 from src.indexer.pipeline import index_repo
 from src.storage import db, graph_store
@@ -109,10 +110,11 @@ def ask(question: str) -> None:
             graph=graph_store.load_graph(repo_id),
         )
         answer = run_agent(question, ctx, llm)
+        verified = verify_answer(answer.text, repo_root, llm)
     finally:
         conn.close()
 
-    typer.echo(answer.text)
+    typer.echo(annotate_answer(answer.text, verified))
 
 
 @app.command()

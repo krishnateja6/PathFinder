@@ -73,3 +73,34 @@ def test_ask_command_runs_the_agent_and_prints_the_answer(tmp_path, monkeypatch)
 
     assert result.exit_code == 0
     assert "This repo defines run()." in result.output
+
+
+def test_ask_command_flags_a_fabricated_citation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repo_id = str(tmp_path.resolve())
+    (tmp_path / "a.py").write_text("def run():\n    return 1\n")
+
+    g = nx.MultiDiGraph()
+    g.add_node("a.py::run:1", type="function", name="run", qualified_name="run", file="a.py", start_line=1)
+    graph_store.save_graph(g, repo_id)
+
+    answer_text = "run() returns 1, defined at a.py:1. It also logs errors, defined at a.py:999."
+
+    class FakeLLM:
+        def __init__(self):
+            self.call_count = 0
+
+        def create(self, *, system, messages, tools):
+            self.call_count += 1
+            text = answer_text if self.call_count == 1 else "SUPPORTED"
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)])
+
+    monkeypatch.setattr(cli, "VoyageEmbeddingClient", lambda: object())
+    monkeypatch.setattr(cli, "ClaudeClient", lambda: FakeLLM())
+    monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
+
+    result = runner.invoke(app, ["ask", "what does run do?"])
+
+    assert result.exit_code == 0
+    assert "run() returns 1, defined at a.py:1." in result.output
+    assert "a.py:999. [UNVERIFIED CITATION]" in result.output
