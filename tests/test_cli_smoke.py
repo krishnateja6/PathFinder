@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import networkx as nx
 from typer.testing import CliRunner
 
+from src import cli
 from src.cli import app
 from src.storage import graph_store
 
@@ -39,3 +42,34 @@ def test_graph_command_prints_callers_and_callees(tmp_path, monkeypatch):
     assert "Callees (1):" in result.output
     assert "helper" in result.output
     assert "Callers: (none)" in result.output
+
+
+def test_ask_command_reports_missing_index(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["ask", "how does this work?"])
+
+    assert result.exit_code == 1
+    assert "codeintel index" in result.output
+
+
+def test_ask_command_runs_the_agent_and_prints_the_answer(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repo_id = str(tmp_path.resolve())
+
+    g = nx.MultiDiGraph()
+    g.add_node("a.py::run:1", type="function", name="run", qualified_name="run", file="a.py", start_line=1)
+    graph_store.save_graph(g, repo_id)
+
+    class FakeLLM:
+        def create(self, *, system, messages, tools):
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="This repo defines run().")])
+
+    monkeypatch.setattr(cli, "VoyageEmbeddingClient", lambda: object())
+    monkeypatch.setattr(cli, "ClaudeClient", lambda: FakeLLM())
+    monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
+
+    result = runner.invoke(app, ["ask", "what does this repo define?"])
+
+    assert result.exit_code == 0
+    assert "This repo defines run()." in result.output

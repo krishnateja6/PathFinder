@@ -3,6 +3,8 @@ from pathlib import Path
 import psycopg
 import typer
 
+from src.agent.loop import ClaudeClient, run_agent
+from src.agent.tools import AgentContext
 from src.indexer.embedder import VoyageEmbeddingClient
 from src.indexer.pipeline import index_repo
 from src.storage import db, graph_store
@@ -52,8 +54,65 @@ def index(repo_path: str) -> None:
 
 @app.command()
 def ask(question: str) -> None:
-    """Ask a grounded question about the indexed repo."""
-    raise NotImplementedError("ask: implemented in Phase 3")
+    """Ask a grounded question about the indexed repo.
+
+    Operates on the repo rooted at the current directory — run
+    `codeintel index .` from that repo first.
+    """
+    repo_root = Path.cwd().resolve()
+    repo_id = str(repo_root)
+
+    if not graph_store.has_graph(repo_id):
+        typer.secho(
+            f"No index found for {repo_id}. Run `codeintel index .` from this directory first.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        embedding_client = VoyageEmbeddingClient()
+    except Exception as exc:
+        typer.secho(
+            f"Could not create the Voyage embedding client (is VOYAGE_API_KEY set?): {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        llm = ClaudeClient()
+    except Exception as exc:
+        typer.secho(
+            f"Could not create the Claude client (is ANTHROPIC_API_KEY set?): {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        conn = db.connect()
+    except psycopg.OperationalError as exc:
+        typer.secho(
+            f"Could not connect to Postgres at {db.get_dsn()} (is `docker compose up -d` running?): {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        ctx = AgentContext(
+            repo_root=repo_root,
+            repo_id=repo_id,
+            conn=conn,
+            embedding_client=embedding_client,
+            graph=graph_store.load_graph(repo_id),
+        )
+        answer = run_agent(question, ctx, llm)
+    finally:
+        conn.close()
+
+    typer.echo(answer.text)
 
 
 @app.command()
