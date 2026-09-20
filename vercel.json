@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/ask.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{tests/**,fixtures/**,.venv/**,.git/**,.codeintel/**,.pytest_cache/**,.ruff_cache/**,codebase-intelligence-assistant-spec.md}"
+    }
+  }
+}
