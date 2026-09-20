@@ -5,7 +5,7 @@ import typer
 
 from src.indexer.embedder import VoyageEmbeddingClient
 from src.indexer.pipeline import index_repo
-from src.storage import db
+from src.storage import db, graph_store
 
 app = typer.Typer(help="codeintel — agentic codebase intelligence over a real call/import graph.")
 
@@ -45,7 +45,8 @@ def index(repo_path: str) -> None:
 
     typer.echo(
         f"Indexed {summary.total_chunks} chunks from {summary.repo} "
-        f"({summary.functions} functions, {summary.methods} methods, {summary.classes} classes)."
+        f"({summary.functions} functions, {summary.methods} methods, {summary.classes} classes). "
+        f"Graph: {summary.graph_nodes} nodes, {summary.graph_edges} edges."
     )
 
 
@@ -63,8 +64,50 @@ def impact(symbol: str) -> None:
 
 @app.command()
 def graph(symbol: str) -> None:
-    """Debug/demo: print callers and callees of a symbol."""
-    raise NotImplementedError("graph: implemented in Phase 2")
+    """Debug/demo: print callers and callees of a symbol.
+
+    Operates on the repo rooted at the current directory — run
+    `codeintel index .` from that repo first.
+    """
+    repo_id = str(Path.cwd().resolve())
+    if not graph_store.has_graph(repo_id):
+        typer.secho(
+            f"No graph found for {repo_id}. Run `codeintel index .` from this directory first.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    g = graph_store.load_graph(repo_id)
+
+    matches = [
+        (node, data)
+        for node, data in g.nodes(data=True)
+        if data.get("type") in ("function", "class")
+        and symbol in (data.get("qualified_name"), data.get("name"))
+    ]
+    if not matches:
+        typer.secho(f"No function or class named '{symbol}' found in the graph.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    for node, data in matches:
+        typer.echo(f"{data['qualified_name']} ({data['file']}:{data['start_line']})")
+
+        callers = sorted(
+            g.nodes[u]["qualified_name"] for u, _, edata in g.in_edges(node, data=True) if edata.get("type") == "CALLS"
+        )
+        callees = sorted(
+            g.nodes[v]["qualified_name"]
+            for _, v, edata in g.out_edges(node, data=True)
+            if edata.get("type") == "CALLS"
+        )
+
+        typer.echo(f"  Callers ({len(callers)}):" if callers else "  Callers: (none)")
+        for name in callers:
+            typer.echo(f"    - {name}")
+        typer.echo(f"  Callees ({len(callees)}):" if callees else "  Callees: (none)")
+        for name in callees:
+            typer.echo(f"    - {name}")
 
 
 if __name__ == "__main__":
