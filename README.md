@@ -8,6 +8,15 @@ before being shown.
 
 Full design spec: [codebase-intelligence-assistant-spec.md](codebase-intelligence-assistant-spec.md).
 
+## Try it live
+
+There's a bring-your-own-key hosted demo (deploy your own via
+[`webdemo/README.md`](webdemo/README.md)) that runs `ask` against this repo's
+own source in your browser — paste an Anthropic API key, ask a question, get
+a grounded, citation-verified answer. It's a separate side project layered on
+the CLI (see that README for exactly how it avoids needing a hosted
+Postgres+pgvector instance), not part of the spec's v1 scope.
+
 ## Why this exists
 
 Existing AI coding tools answer "what does this code do" reasonably well via
