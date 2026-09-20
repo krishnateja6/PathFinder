@@ -18,6 +18,18 @@ dependencies = [
 [project.scripts]
 codeintel = "src.cli:app"
 
+# Vercel's Python entrypoint auto-detection only scans for specific
+# filenames (app.py/index.py/server.py/main.py/wsgi.py/asgi.py). Our
+# function lives at api/ask.py, which isn't one of those, so its
+# fallback repo-wide scan for anything named app/handler/application
+# also picks up the unrelated Typer `app` in src/cli.py and its import
+# in tests/test_cli_smoke.py. Declaring the entrypoint explicitly here
+# resolves that ambiguity without renaming api/ask.py or restructuring
+# anything; it does not change what api/ask.py handles (still just
+# /api/ask) or affect static file serving from public/.
+[tool.vercel]
+entrypoint = "api.ask:handler"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
