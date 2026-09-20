@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PathFinder — ask this repo a question</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>PathFinder</h1>
+      <p class="tagline">
+        Agentic codebase intelligence, running live against its own source.
+        Ask a structural question and it searches, reads source, and follows
+        the call graph across as many steps as it needs — every citation in
+        the answer is checked against the real code before it's shown.
+      </p>
+      <p class="links">
+        <a href="https://github.com/krishnateja6/PathFinder" target="_blank" rel="noopener">Source on GitHub</a>
+        &middot;
+        <a href="https://github.com/krishnateja6/PathFinder/blob/main/README.md" target="_blank" rel="noopener">README</a>
+      </p>
+    </header>
+
+    <form id="ask-form">
+      <label for="api-key">
+        Your Anthropic API key
+        <span class="hint">
+          Sent with this request only — used once to call Claude, then
+          discarded. This server never logs or stores it. Kept only in this
+          browser tab (cleared when you close it), never sent anywhere else.
+          <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key</a>.
+        </span>
+      </label>
+      <input id="api-key" type="password" placeholder="sk-ant-..." autocomplete="off" required />
+
+      <label for="question">Question about this repo</label>
+      <textarea
+        id="question"
+        rows="3"
+        placeholder="e.g. What does compute_impact do when the target is a class?"
+        required
+      ></textarea>
+
+      <button type="submit" id="submit-btn">Ask</button>
+    </form>
+
+    <p id="status" class="status" hidden></p>
+    <p id="error" class="error" hidden></p>
+
+    <section id="result" hidden>
+      <h2>Answer</h2>
+      <p id="answer-text"></p>
+
+      <details id="trace">
+        <summary>Agent trace (<span id="trace-count">0</span> tool calls)</summary>
+        <ol id="trace-list"></ol>
+      </details>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
