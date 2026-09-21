@@ -20,16 +20,17 @@ dependencies = [
 codeintel = "src.cli:app"
 
 # Vercel's Python entrypoint auto-detection only scans for specific
-# filenames (app.py/index.py/server.py/main.py/wsgi.py/asgi.py). Our
-# function lives at api/ask.py, which isn't one of those, so its
-# fallback repo-wide scan for anything named app/handler/application
-# also picks up the unrelated Typer `app` in src/cli.py and its import
-# in tests/test_cli_smoke.py. Declaring the entrypoint explicitly here
-# resolves that ambiguity without renaming api/ask.py or restructuring
-# anything; it does not change what api/ask.py handles (still just
-# /api/ask) or affect static file serving from public/.
+# filenames (app.py/index.py/server.py/main.py/wsgi.py/asgi.py) — and
+# separately, its fallback repo-wide scan for anything named
+# app/handler/application picks up unrelated matches like the Typer
+# `app` in src/cli.py. Declaring the entrypoint explicitly avoids both
+# problems. All /api/* routes are consolidated into this one file
+# (api/index.py), with routing done in Python (self.path), rather than
+# one file per endpoint — multiple files each defining their own
+# top-level `handler` would reintroduce the exact ambiguity above, and
+# this config can only point at one of them.
 [tool.vercel]
-entrypoint = "api.ask:handler"
+entrypoint = "api.index:handler"
 
 [dependency-groups]
 dev = [
