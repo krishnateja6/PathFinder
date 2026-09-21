@@ -1,111 +1,165 @@
-# PathFinder (codeintel)
+# PathFinder
 
-Agentic codebase intelligence CLI for Python repos. Answers structural questions
-("what calls this," "what breaks if I change this signature") using a real
-tree-sitter-derived call/import graph plus pgvector semantic search — not just
-embedding similarity — grounded with `file:line` citations that are verified
-before being shown.
+Paste a public GitHub repository, get a grounded architecture overview, ask
+it questions with citations, and run deterministic change-impact analysis —
+backed by a real tree-sitter call/import graph and pgvector semantic search,
+not just an LLM's guess. Also includes a separate, simpler feature: scan a
+GitHub profile and get an explainable, deterministic score for each public
+repo.
 
-Full design spec: [codebase-intelligence-assistant-spec.md](codebase-intelligence-assistant-spec.md).
-
-## Try it live
-
-There's a bring-your-own-key hosted demo (deploy your own via
-[`webdemo/README.md`](webdemo/README.md)) that runs `ask` against this repo's
-own source in your browser — paste an Anthropic API key, ask a question, get
-a grounded, citation-verified answer. It's a separate side project layered on
-the CLI (see that README for exactly how it avoids needing a hosted
-Postgres+pgvector instance), not part of the spec's v1 scope.
+A CLI version of the same engine (single local repo, no web UI) still exists
+under `src/cli.py` — see [Usage: CLI](#usage-cli) below. The web product is
+the primary way to use this now.
 
 ## Why this exists
 
 Existing AI coding tools answer "what does this code do" reasonably well via
-RAG, but are weak at "what happens elsewhere if I change this" — that question
-needs structural understanding (call graphs, inheritance), not semantic
-similarity over text. PathFinder builds both indexes from the same parse pass
-and gives an LLM agent tools to traverse the structural one, rather than
-relying on a single vector search per question.
+RAG, but are weak at "what happens elsewhere if I change this" — that
+question needs structural understanding (call graphs, inheritance), not
+semantic similarity over text. PathFinder builds a real call/import graph
+from the same parse pass used for embeddings, and gives an LLM agent tools to
+traverse that graph directly. Claude explains structural facts; it never
+invents them — every "who calls this" or "what breaks if I change this"
+answer comes from a deterministic graph traversal, not a model guessing.
 
 ## Architecture
 
 ```
-                        ┌─────────────────────┐
-                        │   CLI (typer)        │
-                        │  index / ask /        │
-                        │  impact / graph       │
-                        └──────────┬────────────┘
-                                   │
-        ┌──────────────────────────┼───────────────────────────┐
-        │                          │                           │
-        ▼                          ▼                           ▼
-┌───────────────┐        ┌──────────────────┐        ┌──────────────────┐
-│   indexer/     │        │     agent/        │        │   analysis/       │
-│                │        │                   │        │                   │
-│ parser.py      │        │ loop.py           │        │ impact.py          │
-│  tree-sitter   │        │  hand-rolled       │        │  pure graph BFS    │
-│  → chunks+AST  │        │  tool-use loop     │        │  over CALLS/       │
-│                │        │  vs Claude API     │        │  INHERITS edges,   │
-│ graph_builder  │───────▶│                   │        │  no LLM involved   │
-│  AST → CALLS/  │  reads │ tools.py           │        │                   │
-│  IMPORTS/      │  graph │  the 5 agent tools │        └──────────────────┘
-│  INHERITS/     │        │  semantic_search,  │
-│  DEFINES edges │        │  read_file,        │
-│                │        │  find_definition,  │
-│ embedder.py    │        │  find_callers,     │
-│  chunks →      │        │  find_callees      │
-│  Voyage        │        │                   │
-│  embeddings    │        │ verify.py          │
-│                │        │  post-hoc citation │
-│ pipeline.py    │        │  verification pass │
-│  orchestrates  │        └──────────────────┘
-│  all of the    │
-│  above         │
-└───────┬────────┘
-        │
-        ▼
-┌───────────────────────────────┐
-│           storage/              │
-│                                  │
-│ db.py           graph_store.py  │
-│  Postgres +      pickle the      │
-│  pgvector        networkx graph  │
-│  semantic index  per repo_id     │
-└───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  web/  (React SPA, builds into public/)                              │
+│  Landing → Analyze flow / Profile Scan                                │
+│  Workspace: Overview | Architecture | Explorer+Chat | Impact tabs     │
+└───────────────────────────────┬───────────────────────────────────────┘
+                                 │ fetch("/api/...")
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  api/index.py  — one Vercel Python function, routes by self.path      │
+│  (one file, deliberately — see the comment on [tool.vercel] in        │
+│  pyproject.toml for why multiple files each defining `handler`         │
+│  isn't safe here)                                                      │
+│                                                                         │
+│  POST /api/analyze        GET /api/analysis      GET /api/architecture│
+│  GET  /api/files          POST /api/ask          GET /api/impact      │
+│  POST /api/profile_scan   POST /api/profile_feedback                  │
+└───────┬────────────────┬────────────────┬────────────────┬───────────┘
+        │                │                │                │
+        ▼                ▼                ▼                ▼
+┌───────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
+│ ingestion/     │ │ indexer/      │ │ agent/        │ │ profile_scan/     │
+│ validator      │ │ parser        │ │ loop          │ │ (fully            │
+│ github_client  │ │ graph_builder │ │ tools (6)     │ │  independent of   │
+│ source_filter  │ │ embedder      │ │ verify        │ │  everything else  │
+│ pipeline       │ │ generic_      │ │               │ │  on this page —   │
+│ (orchestrates  │ │  chunker      │ │ analysis/     │ │  no Postgres,     │
+│  the above)    │ │ tech_stack    │ │ impact        │ │  no caching)      │
+└───────┬────────┘ │ pipeline (CLI)│ │ components    │ └──────────────────┘
+        │          └──────┬────────┘ └──────┬────────┘
+        └──────────────────┴─────────────────┘
+                            │
+                            ▼
+                  ┌──────────────────────┐
+                  │ storage/              │
+                  │ db (pgvector)         │
+                  │ analyses (caching)    │
+                  │ graph_edges           │
+                  │ repo_files            │
+                  │ graph_reconstruction  │
+                  │ graph_store (CLI only,│
+                  │  pickle to local disk)│
+                  └──────────────────────┘
 ```
 
-Two indexes are built from a single tree-sitter parse of the repo:
+## How analysis works
 
-- **Semantic index** (`indexer/embedder.py` → `storage/db.py`): function/class
-  chunks (signature + docstring + body kept together), embedded with Voyage
-  and stored in pgvector.
-- **Structural index** (`indexer/graph_builder.py` → `storage/graph_store.py`):
-  a `networkx` graph with `Function`/`Class`/`Module` nodes and
-  `CALLS`/`IMPORTS`/`INHERITS`/`DEFINES` edges, resolved statically (direct
-  calls, `self`/`cls` methods with inherited-method fallback, typed local
-  variables, absolute/relative imports — see the module docstring in
-  `graph_builder.py` for exactly what's out of scope).
+One tree-sitter parse of a repo feeds two indexes plus one derived view:
 
-`ask` runs a hand-rolled loop over the Claude Messages API (`agent/loop.py`,
-~180 lines, no agent framework) that gives the model five tools
-(`agent/tools.py`) to search, read, and walk the graph across as many turns as
-a question needs, then verifies every `file:line` citation in the answer
-against the actual source before printing it (`agent/verify.py`). `impact` is
-pure graph traversal (`analysis/impact.py`) — no LLM in the loop at all.
+1. **Semantic index** — every function/class chunk (Python) or fixed-size
+   line window (any other text file) is embedded with Voyage and stored in
+   Postgres+pgvector, scoped by `repo = "owner/repo@shortsha"`.
+2. **Structural index** — Python only. `indexer/graph_builder.py` builds a
+   `networkx` graph with `Function`/`Class`/`Module` nodes and
+   `CALLS`/`IMPORTS`/`INHERITS`/`DEFINES` edges, resolved statically (direct
+   calls, `self`/`cls` methods with inherited-method fallback, typed local
+   variables, absolute/relative *intra-repo* imports). Persisted as rows in
+   `graph_edges` + `code_chunks` (web) or pickled to disk (CLI), and
+   reconstructed into an in-memory graph on each request.
+3. **Architecture diagram** — `analysis/components.py` groups files by
+   top-level directory and aggregates the structural index's own `IMPORTS`
+   edges up to that level. No new import-detection logic, no LLM.
+4. **Agentic Q&A** — `agent/loop.py` is a hand-rolled loop (no framework,
+   ~200 lines) over the Claude Messages API. It gives the model six tools
+   (`agent/tools.py`): `semantic_search`, `read_file`, `find_definition`,
+   `find_callers`, `find_callees`, and `analyze_impact` (a real transitive
+   graph traversal, not a guess from a single `find_callers` hop). The
+   system prompt explicitly tells the model that everything tools return is
+   untrusted repository data, never instructions to follow.
+5. **Citation verification** — `agent/verify.py` checks every `file:line`
+   citation in the finished answer two ways: deterministically (does the
+   file/line range exist?) and, for citations that pass, a narrow
+   single-purpose LLM call asking whether the exact excerpt actually
+   supports that specific sentence. Sentences that fail either check are
+   flagged `[UNVERIFIED CITATION]` rather than shown as fact.
 
-## Setup
+Change-impact analysis (`analysis/impact.py`) is pure graph BFS — no LLM
+anywhere in that path.
+
+## Supported languages
+
+**Python** gets full structural analysis (call graph, impact analysis,
+inheritance-aware resolution) — everything above. **Every other text file**
+(JS, Go, Rust, README, config, anything that decodes as UTF-8) is still
+chunked and embedded, so it's findable via semantic search and readable in
+the Explorer tab — it just has no graph nodes, so `find_callers`,
+`find_callees`, and Impact have nothing to say about it. The Overview tab
+labels each detected language accordingly ("Full structural analysis" vs.
+"Searchable, not graphed").
+
+## Local setup
+
+Backend:
 
 ```bash
 uv sync --all-groups
-docker compose up -d          # postgres + pgvector, for `index`/`ask`
-export VOYAGE_API_KEY=...     # for `index` (embeddings)
-export ANTHROPIC_API_KEY=...  # for `ask` (agent loop + citation verification)
+docker compose up -d              # local Postgres+pgvector for dev/testing
+export VOYAGE_API_KEY=...         # embeds indexed chunks and incoming questions
+export GITHUB_TOKEN=...           # optional locally; raises the 60/hr GitHub limit to 5,000/hr
 uv run pytest
 ```
 
-`graph` and `impact` only read the persisted structural graph, so they work
-without either API key once a repo has been indexed.
+Frontend (builds straight into `public/`, which Vercel serves as static
+assets — see `web/vite.config.js` for why):
 
-## Usage
+```bash
+cd web
+npm install
+npm run build   # or `npm run dev` for local iteration against a running backend
+```
+
+## Environment variables
+
+| Variable | Where it's used | Server-side secret? |
+|---|---|---|
+| `DATABASE_URL` | `storage/db.py` — defaults to the local docker-compose DB | N/A (connection string) |
+| `VOYAGE_API_KEY` | Embeds indexed chunks and incoming questions | **Yes** — never sent to or read from the frontend |
+| `GITHUB_TOKEN` | Repo ingestion + Profile Scan's GitHub API calls | **Yes** — raises rate limits; both features work unauthenticated (60/hr) without it |
+| Anthropic API key | Every `ask` / Deep AI feedback call | **Never a server env var** — see below |
+
+## Anthropic BYOK behavior
+
+There is deliberately no `ANTHROPIC_API_KEY` server-side. Each visitor pastes
+their own key in the browser (kept in that tab's `sessionStorage` only); it's
+sent to `/api/ask` or `/api/profile_feedback` for that single request,
+used once to construct a `ClaudeClient`, and never logged, stored, or
+returned. If you're deploying this yourself: do not set `ANTHROPIC_API_KEY`
+as a Vercel environment variable — the code never falls back to one, and
+setting it would do nothing except sit there unused.
+
+## Usage: CLI
+
+The original single-repo CLI still works, operating on a local path instead
+of a GitHub URL, with no web UI. It's built against
+[`codebase-intelligence-assistant-spec.md`](codebase-intelligence-assistant-spec.md),
+the original design spec this whole project started from:
 
 ```bash
 codeintel index <repo_path>          # build the semantic + structural index
@@ -114,139 +168,111 @@ codeintel impact <function_or_file>  # deterministic change-impact analysis
 codeintel graph <function>           # debug/demo: print callers/callees
 ```
 
-`ask`, `impact`, and `graph` all operate on the repo rooted at the current
-directory — `cd` into the repo you indexed before running them.
-
-## Demo: PathFinder analyzing itself
-
-No external repo needed to see the structural side working — run against this
-repo. `index` needs a Voyage API key for embeddings, but `graph`/`impact` only
-need the graph, so it's built here directly and then queried through the real
-CLI:
-
-```bash
-$ python -m src.cli graph build_graph
-build_graph (src/indexer/graph_builder.py:44)
-  Callers (14):
-    - _ctx
-    - ctx
-    - index_repo
-    - test_build_graph_calls_edges_match_hand_derived_expectations
-    - test_build_graph_defines_edges_cover_every_chunk
-    - test_build_graph_imports_edges
-    - test_build_graph_inherits_edges
-    - test_build_graph_node_counts
-    - test_build_graph_resolves_self_recursion_and_nested_function_calls
-    - test_impact_of_a_class_includes_subclasses_and_method_callers
-    - test_impact_of_a_file_is_everything_it_defines_treated_as_targets
-    - test_impact_of_a_qualified_method_name_is_unambiguous
-    - test_impact_of_add_resolves_both_ambiguous_bare_name_matches
-    - test_impact_of_unknown_symbol_is_empty
-  Callees (9):
-    - _add_call_edges
-    - _add_import_edges_and_bindings
-    - _add_inherits_edges
-    - _add_module_and_definition_nodes
-    - _build_module_index
-    - _collect_file_defs
-    - iter_python_files
-    - new_parser
-    - parse_file_with_nodes
-
-$ python -m src.cli impact compute_impact
-Changing compute_impact (src/analysis/impact.py:80):
-  7 affected call site(s):
-    - impact (src/cli.py:121) [calls]
-    - test_compute_impact_follows_multi_hop_caller_chains (tests/analysis/test_impact.py:15) [calls]
-    - test_impact_of_add_resolves_both_ambiguous_bare_name_matches (tests/analysis/test_impact.py:31) [calls]
-    - test_impact_of_a_file_is_everything_it_defines_treated_as_targets (tests/analysis/test_impact.py:44) [calls]
-    - test_impact_of_a_class_includes_subclasses_and_method_callers (tests/analysis/test_impact.py:62) [calls]
-    - test_impact_of_unknown_symbol_is_empty (tests/analysis/test_impact.py:74) [calls]
-    - test_impact_of_a_qualified_method_name_is_unambiguous (tests/analysis/test_impact.py:83) [calls]
-```
-
-Both outputs are exactly right: `build_graph` really is called from those 14
-places (the pipeline plus every test that builds a graph) and calls those 9
-helpers; every real caller of `compute_impact` — the CLI's `impact` command
-and all six of its own test cases — shows up as an affected call site.
-`ask` (the LLM-backed command) needs live `VOYAGE_API_KEY`/`ANTHROPIC_API_KEY`
-credentials to record honestly, since it makes real embedding + Claude API
-calls — see [Example interaction](#example-interaction) below for the shape
-of a real session against a repo with those keys configured.
-
-### Example interaction
-
-From the spec, showing what a multi-hop `ask` session looks like end to end
-(agent internals in brackets are what actually happens — a real trace, once
-credentials are configured, would show the same `find_definition` /
-`find_callers` / `find_callees` tool calls this repo's own tests script):
-
-```
-> How does the retry logic work in the payment webhook handler?
-
-[agent internally: semantic_search("payment webhook retry") →
- finds handle_payment_webhook() in webhooks/payment.py →
- read_file → sees a call to retry_with_backoff() →
- find_definition(retry_with_backoff) → reads it →
- find_callers(handle_payment_webhook) → checks if retries happen upstream too]
-
-Answer: handle_payment_webhook (webhooks/payment.py:41) wraps the
-downstream call in retry_with_backoff (utils/retry.py:12), which retries
-up to 3 times with exponential backoff on any exception. There's no
-upstream retry — this is the only retry layer for this path.
-```
-
-## Grounding & evaluation
-
-Two things are checked deterministically rather than trusted because an LLM
-said so:
-
-- **Graph correctness**: every `CALLS`/`IMPORTS`/`INHERITS`/`DEFINES` edge the
-  graph builder produces for `fixtures/simple_pkg` was hand-derived by reading
-  that fixture's source and asserted as an exact set
-  (`tests/indexer/test_graph_builder.py`), including the trickier cases —
-  bare calls disambiguated from `self.` calls that share a name, and a
-  constructor call resolved through an unoverridden inherited `__init__`.
-- **Citation verification**: a golden set of five hand-verified claims against
-  `fixtures/simple_pkg` (`tests/eval/test_citation_eval.py`) covers the
-  failure modes that matter — a correct citation, a hallucinated file, an
-  out-of-range line, and (the sharpest case) a citation that's real but
-  attached to the *wrong* claim (`Animal.speak` misattributed with `Dog`'s
-  `"Woof!"` return value). All five are classified correctly.
-
-Semantic search (`agent/tools.py::semantic_search`) is not covered by an
-offline accuracy number here: Voyage embeddings are meaningless without a
-live API key (a fake embedding client, used everywhere else in the test
-suite, returns the same vector for every input, so any "accuracy" measured
-against it would be fabricated rather than real). Retrieval quality on real
-embeddings is a natural next eval to add once the tool is run against a real
-indexed repo with credentials configured.
-
-## Known limitations
-
-The structural index resolves the statically-common cases well and
-deliberately does not chase full dynamic-call resolution — decorators,
-`*args`/`**kwargs` dispatch, `getattr`-based access, calls through a module
-alias (`module.func()`), and multi-base MRO (bases are walked depth-first,
-first match wins, not full C3 linearization) are all left unresolved rather
-than guessed at. This is a known, accepted limitation of static analysis in
-general, not a bug — see the module docstrings in `indexer/graph_builder.py`
-and `agent/verify.py` for the exact boundaries.
-
-## Future work (explicitly out of v1 scope)
-
-- PR-diff review mode
-- Commit-history indexing ("why was this changed")
-- Multi-language support beyond Python
-- VS Code extension UI
+`ask`/`impact`/`graph` operate on the repo rooted at the current directory —
+`cd` into the indexed repo first. `graph`/`impact` need no API key once a
+repo's been indexed once (they only read the persisted structural graph).
 
 ## Testing
 
 ```bash
-uv run pytest    # 77 tests; storage/agent/pipeline tests need Postgres+pgvector
+uv run pytest        # 207 tests; Postgres-dependent ones skip gracefully if unreachable
 uv run ruff check .
+uv run mypy src/ api/
+cd web && npm run build
 ```
 
-Storage- and agent-tool tests that need a real Postgres connection skip
-gracefully if one isn't reachable (`tests/conftest.py`); CI always has one via
-a service container.
+CI (`.github/workflows/ci.yml`) currently runs `pytest` and `ruff` against a
+real Postgres service container on every push; it does not yet run `mypy` or
+the frontend build — a good next addition, not done here to keep this phase
+scoped to documentation rather than CI changes.
+
+## Deployment (Vercel)
+
+- **One Python function, not one per endpoint.** All 8 `/api/*` routes live
+  in `api/index.py`, routed internally by `self.path`. Vercel's Python
+  entrypoint resolution expects a single unambiguous handler once
+  `[tool.vercel].entrypoint` is pinned in `pyproject.toml` (see that file's
+  comment for the exact deployment failure this avoids) — splitting into
+  multiple files each defining their own top-level `handler` reintroduces
+  that ambiguity, and unlike the first time, it wouldn't be fixable the same
+  way, since the config only points at one file.
+- **Static frontend** ships from `public/`, built by `cd web && npm run
+  build` — not something Vercel builds on deploy in this setup; run it
+  locally and commit the output, same as any other build artifact checked
+  into `public/`.
+- **Production needs a *hosted* Postgres+pgvector** (Neon, Supabase, or
+  Vercel Postgres all support pgvector) — the local `docker-compose.yml`
+  instance is dev/test only and isn't reachable from Vercel.
+- `/api/analyze` is a single synchronous request, not a streamed job. Hard
+  size/file-count/file-size caps (`ingestion/source_filter.py`) are the
+  safety valve against exceeding Vercel's function duration instead —
+  `maxDuration: 60` is set in `vercel.json`.
+
+## Security model
+
+- `VOYAGE_API_KEY` and `GITHUB_TOKEN` are server-side secrets, read from the
+  environment, never accepted from or exposed to the frontend.
+- Visitor-supplied Anthropic keys are used for exactly one request each,
+  never logged, stored, or shared across visitors (see BYOK section above).
+- Repository content (source, README, comments, search results) is treated
+  as untrusted data in the agent's system prompt — the model is explicitly
+  told not to follow anything in tool results that looks like an
+  instruction. This is a real, tested concern: nothing here executes
+  downloaded repository code, ever — only parses and reads it.
+- The frontend renders all repository-controlled content (file contents,
+  chat answers) through React's default JSX interpolation, never
+  `dangerouslySetInnerHTML`, so it's auto-escaped against injected
+  HTML/script content.
+
+## Known limitations
+
+- **The architecture diagram is a directory-boundary heuristic, not
+  call-graph clustering.** Components are literally "files grouped by their
+  top-level directory," with edges aggregated from the same `IMPORTS` edges
+  the structural graph already computes. For repos with many top-level
+  directories (test suites, docs, fixtures all counted), the diagram is
+  correctly reported as outside the "5–15 components" clean range rather
+  than forced into an artificial grouping.
+- **Chat is single-turn.** Each question starts a fresh agent loop with no
+  memory of previous questions in the session — no "what about that
+  function" follow-ups with implicit reference resolution.
+- **`src`-layout Python packages can miss cross-boundary import edges.**
+  Discovered during live verification against a real repo (`pallets/itsdangerous`):
+  when code outside `src/` imports the package by its *installed* name
+  (`from itsdangerous.signer import Signer`, resolved via build-system
+  package remapping) rather than a path relative to the repo root, the
+  import resolver — which only matches dotted paths against the repo's
+  literal directory structure — doesn't follow it. Imports and calls
+  *within* `src/` resolve correctly; it's specifically test-suite-to-package
+  boundaries in this layout that are missed.
+- **The static call/import resolver doesn't chase full dynamic dispatch** —
+  decorators, `*args`/`**kwargs` dispatch, `getattr`-based access, calls
+  through a module alias (`module.func()`), and multi-base MRO (bases are
+  walked depth-first, first match wins, not full C3 linearization) are left
+  unresolved rather than guessed at. See `indexer/graph_builder.py`'s module
+  docstring for the exact boundary.
+- **No per-IP rate limiting** on any endpoint yet — a public deployment
+  costs you a Voyage call per ingested chunk/question and costs each visitor
+  their own Claude usage, with no throttling beyond the hard per-repo size
+  caps and `MAX_TURNS`/question-length caps on `/api/ask`.
+- **Oversized-repo rejection is verified with synthetic data, not a real
+  huge repo** — the size-checking logic is pure arithmetic over byte counts
+  that doesn't care whether the bytes are real or synthetic, so a passing
+  automated test was judged sufficient rather than spending the bandwidth to
+  download something like the Linux kernel just to watch it get rejected.
+
+## Explicitly deferred (out of scope for this version)
+
+- A dedicated dependency/call-graph explorer with depth controls, separate
+  from the Architecture diagram
+- Execution-flow extraction ("request → middleware → service → DB")
+- Architectural insights / fan-in-fan-out hotspot detection
+- Multi-turn conversational memory with reference resolution
+- Global search as its own feature (file/symbol/semantic search UI)
+- Potentially-affected-tests detection
+- Deep per-node detail panels on the architecture diagram beyond a node's
+  key files
+- Private repositories, GitHub OAuth, PR/diff-aware analysis
+- True async/background ingestion for repos too large or slow to fit a
+  single synchronous request (the `analyses.status` column already supports
+  a `pending` state, so this is forward-compatible whenever it's built)
