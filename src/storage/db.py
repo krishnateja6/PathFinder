@@ -48,7 +48,7 @@ def schema_sql(embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> str:
     CREATE EXTENSION IF NOT EXISTS vector;
 
     CREATE TABLE IF NOT EXISTS code_chunks (
-        id TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
         repo TEXT NOT NULL,
         name TEXT NOT NULL,
         qualified_name TEXT NOT NULL,
@@ -59,7 +59,8 @@ def schema_sql(embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> str:
         signature TEXT NOT NULL,
         docstring TEXT,
         source TEXT NOT NULL,
-        embedding VECTOR({embedding_dim})
+        embedding VECTOR({embedding_dim}),
+        PRIMARY KEY (repo, id)
     );
 
     CREATE INDEX IF NOT EXISTS code_chunks_repo_idx ON code_chunks (repo);
@@ -79,7 +80,13 @@ def upsert_chunks(
     chunks: list[CodeChunk],
     embeddings: list[ChunkEmbedding],
 ) -> None:
-    """Insert or update chunks for `repo`, keyed by chunk id."""
+    """Insert or update chunks for `repo`, keyed by (repo, chunk id).
+
+    Keyed on the pair, not id alone: two different repos can easily
+    produce the same relative chunk id (e.g. both have a utils.py::add
+    at the same line), and id-only conflict resolution would let one
+    repo's row silently overwrite another's.
+    """
     vectors_by_id = {e.chunk_id: Vector(e.vector) for e in embeddings}
     rows = [
         (
@@ -105,8 +112,7 @@ def upsert_chunks(
                 (id, repo, name, qualified_name, kind, file, start_line, end_line,
                  signature, docstring, source, embedding)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                repo = EXCLUDED.repo,
+            ON CONFLICT (repo, id) DO UPDATE SET
                 name = EXCLUDED.name,
                 qualified_name = EXCLUDED.qualified_name,
                 kind = EXCLUDED.kind,
@@ -129,6 +135,32 @@ def delete_repo(conn: psycopg.Connection, repo: str) -> None:
     conn.commit()
 
 
+def get_chunks_by_repo(conn: psycopg.Connection, repo: str) -> list[dict]:
+    """Every chunk for `repo`, unfiltered by any vector similarity — used to
+    reconstruct the full structural graph, not for semantic search."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, name, qualified_name, kind, file, start_line, end_line, signature, docstring
+            FROM code_chunks
+            WHERE repo = %s
+            """,
+            (repo,),
+        )
+        assert cur.description is not None
+        columns = [desc.name for desc in cur.description]
+        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+
+
+def get_chunk_sources_and_embeddings(conn: psycopg.Connection, repo: str) -> dict[str, tuple[str, list[float]]]:
+    """chunk id -> (source, embedding) for `repo` — lets a re-analysis reuse
+    an unchanged chunk's existing embedding instead of paying to re-embed
+    identical content (spec's "don't re-embed unchanged files")."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, source, embedding FROM code_chunks WHERE repo = %s", (repo,))
+        return {row[0]: (row[1], row[2].to_list()) for row in cur.fetchall() if row[2] is not None}
+
+
 def semantic_search(
     conn: psycopg.Connection,
     repo: str,
@@ -148,5 +180,6 @@ def semantic_search(
             """,
             {"query_vector": Vector(query_vector), "repo": repo, "limit": limit},
         )
+        assert cur.description is not None
         columns = [desc.name for desc in cur.description]
         return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]

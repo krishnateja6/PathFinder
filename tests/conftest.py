@@ -1,7 +1,16 @@
 import psycopg
 import pytest
 
-from src.storage import db
+from src.storage import analyses, db, graph_edges, repo_files
+
+
+def _clean_test_rows(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM code_chunks WHERE repo LIKE 'test-%'")
+        cur.execute("DELETE FROM analyses WHERE repo_key LIKE 'test-%'")
+        cur.execute("DELETE FROM graph_edges WHERE repo LIKE 'test-%'")
+        cur.execute("DELETE FROM repo_files WHERE repo LIKE 'test-%'")
+    conn.commit()
 
 
 @pytest.fixture
@@ -18,13 +27,12 @@ def pg_conn():
         return
 
     db.init_schema(conn, embedding_dim=3)
+    analyses.init_schema(conn)
+    graph_edges.init_schema(conn)
+    repo_files.init_schema(conn)
     try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM code_chunks WHERE repo LIKE 'test-%'")
-        conn.commit()
+        _clean_test_rows(conn)
         yield conn
     finally:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM code_chunks WHERE repo LIKE 'test-%'")
-        conn.commit()
+        _clean_test_rows(conn)
         conn.close()
