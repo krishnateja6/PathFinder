@@ -28,6 +28,15 @@ from src.indexer.parser import CodeChunk, iter_python_files, new_parser, parse_f
 _DEF_TYPES = {"function_definition", "class_definition"}
 
 
+def _text(node: Node) -> str:
+    """A named node's source text, decoded. tree-sitter types `.text` as
+    optional for nodes representing a missing/error range, but every node
+    we call this on here was just matched by name/type as a real part of
+    the tree, so it always has real backing bytes."""
+    assert node.text is not None
+    return node.text.decode("utf-8")
+
+
 @dataclass
 class _ClassInfo:
     chunk_id: str
@@ -121,7 +130,7 @@ def _base_names(class_def_node: Node) -> list[str]:
     supers = class_def_node.child_by_field_name("superclasses")
     if supers is None:
         return []
-    return [arg.text.decode("utf-8") for arg in supers.named_children if arg.type in ("identifier", "attribute")]
+    return [_text(arg) for arg in supers.named_children if arg.type in ("identifier", "attribute")]
 
 
 def _build_module_index(files: list[str]) -> dict[str, str]:
@@ -144,9 +153,9 @@ def _relative_import_target(node: Node) -> tuple[int, str | None]:
     trailing = None
     for child in node.named_children:
         if child.type == "import_prefix":
-            dots = len(child.text.decode("utf-8"))
+            dots = len(_text(child))
         elif child.type == "dotted_name":
-            trailing = child.text.decode("utf-8")
+            trailing = _text(child)
     return dots, trailing
 
 
@@ -180,7 +189,7 @@ def _add_import_edges_and_bindings(
     def handle_import_statement(node: Node) -> None:
         for child in node.named_children:
             if child.type == "dotted_name":
-                dotted = child.text.decode("utf-8")
+                dotted = _text(child)
                 target = module_index.get(dotted)
                 if target:
                     graph.add_edge(rel_path, target, type="IMPORTS")
@@ -190,10 +199,10 @@ def _add_import_edges_and_bindings(
                 alias_node = child.child_by_field_name("alias")
                 if name_node is None or alias_node is None:
                     continue
-                target = module_index.get(name_node.text.decode("utf-8"))
+                target = module_index.get(_text(name_node))
                 if target:
                     graph.add_edge(rel_path, target, type="IMPORTS")
-                    bindings[alias_node.text.decode("utf-8")] = ("module", target)
+                    bindings[_text(alias_node)] = ("module", target)
 
     def handle_import_from_statement(node: Node) -> None:
         module_node = node.child_by_field_name("module_name")
@@ -203,7 +212,7 @@ def _add_import_edges_and_bindings(
             dots, trailing = _relative_import_target(module_node)
             target_dotted = _resolve_relative_module(rel_path, dots, trailing)
         elif module_node.type == "dotted_name":
-            target_dotted = module_node.text.decode("utf-8")
+            target_dotted = _text(module_node)
         else:
             return
         target = module_index.get(target_dotted)
@@ -220,15 +229,15 @@ def _add_import_edges_and_bindings(
             if name_child is None:
                 continue
             if name_child.type == "dotted_name":
-                imported = name_child.text.decode("utf-8")
+                imported = _text(name_child)
                 local_name = imported
             elif name_child.type == "aliased_import":
                 name_node = name_child.child_by_field_name("name")
                 alias_node = name_child.child_by_field_name("alias")
                 if name_node is None:
                     continue
-                imported = name_node.text.decode("utf-8")
-                local_name = alias_node.text.decode("utf-8") if alias_node is not None else imported
+                imported = _text(name_node)
+                local_name = _text(alias_node) if alias_node is not None else imported
             else:
                 continue
             chunk_id = target_fd.functions.get(imported)
@@ -341,9 +350,9 @@ def _local_variable_types(
                 if left is not None and left.type == "identifier" and right is not None and right.type == "call":
                     fn = right.child_by_field_name("function")
                     if fn is not None and fn.type == "identifier":
-                        resolved = _resolve_name(fn.text.decode("utf-8"), fd, bindings, classes_by_id)
+                        resolved = _resolve_name(_text(fn), fd, bindings, classes_by_id)
                         if resolved is not None and resolved[0] == "class":
-                            types[left.text.decode("utf-8")] = resolved[1]
+                            types[_text(left)] = resolved[1]
             visit(child)
 
     visit(body)
@@ -364,7 +373,7 @@ def _resolve_call(
         return None
 
     if fn.type == "identifier":
-        resolved = _resolve_name(fn.text.decode("utf-8"), fd, bindings, classes_by_id)
+        resolved = _resolve_name(_text(fn), fd, bindings, classes_by_id)
         if resolved is None:
             return None
         kind, target = resolved
@@ -379,8 +388,8 @@ def _resolve_call(
         attr = fn.child_by_field_name("attribute")
         if obj is None or attr is None or obj.type != "identifier":
             return None
-        obj_name = obj.text.decode("utf-8")
-        attr_name = attr.text.decode("utf-8")
+        obj_name = _text(obj)
+        attr_name = _text(attr)
         if obj_name in ("self", "cls") and owning_class_id is not None:
             return _resolve_method(graph, classes_by_id, owning_class_id, attr_name)
         if obj_name in local_types:

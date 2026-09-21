@@ -36,7 +36,9 @@ class VoyageEmbeddingClient:
 
     def embed(self, texts: list[str], model: str, input_type: str) -> list[list[float]]:
         result = self._client.embed(texts, model=model, input_type=input_type)
-        return result.embeddings
+        # voyageai types this as list[float] | list[int] since its wire format
+        # doesn't distinguish; the API always returns floats in practice.
+        return [[float(x) for x in vector] for vector in result.embeddings]
 
 
 def build_embedding_text(chunk: CodeChunk) -> str:

@@ -120,7 +120,7 @@ def _walk(
             continue
 
         name_node = def_node.child_by_field_name("name")
-        name = name_node.text.decode("utf-8") if name_node is not None else "<anonymous>"
+        name = name_node.text.decode("utf-8") if name_node is not None and name_node.text is not None else "<anonymous>"
         qualified_name = ".".join([*scope_parts, name])
 
         if def_node.type == "class_definition":

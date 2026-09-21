@@ -36,6 +36,7 @@ entrypoint = "api.index:handler"
 dev = [
     "pytest>=8.3",
     "ruff>=0.6",
+    "mypy>=1.11",
 ]
 
 [build-system]
@@ -52,3 +53,8 @@ extend-exclude = ["fixtures"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["fixtures", "web"]
