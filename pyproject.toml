@@ -13,6 +13,7 @@ dependencies = [
     "voyageai>=0.3",
     "psycopg[binary]>=3.2",
     "pgvector>=0.3",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
