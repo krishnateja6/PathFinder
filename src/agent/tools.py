@@ -1,4 +1,5 @@
-"""The five tools given to the agentic Q&A loop (spec §3.2).
+"""The six tools given to the agentic Q&A loop (spec §3.2, plus
+analyze_impact added for the multi-repo product's chat generalization).
 
 Each tool is a plain, testable function taking an explicit `AgentContext`
 rather than reaching for module-level globals — the agent loop's
@@ -13,6 +14,7 @@ from pathlib import Path
 import networkx as nx
 import psycopg
 
+from src.analysis.impact import compute_impact
 from src.indexer.embedder import DEFAULT_MODEL, EmbeddingClient
 from src.storage import db
 
@@ -116,3 +118,29 @@ def find_callers(ctx: AgentContext, function: str) -> list[dict]:
 def find_callees(ctx: AgentContext, function: str) -> list[dict]:
     """Graph lookup: what this function/method calls."""
     return _related(ctx, function, direction="callees")
+
+
+def analyze_impact(ctx: AgentContext, symbol: str) -> dict:
+    """Deterministic graph traversal: everything downstream that depends on
+    `symbol` (a function, method, class, or file) if it changes — the same
+    computation behind the standalone Impact tab, exposed as a tool so the
+    agent can answer "what would break if I changed X" with a real
+    transitive-caller/subclass traversal instead of guessing from a single
+    find_callers hop.
+    """
+    result = compute_impact(ctx.graph, symbol)
+
+    def _describe_impacted(items):
+        return [
+            {
+                "qualified_name": s.qualified_name,
+                "kind": s.kind,
+                "file": s.file,
+                "start_line": s.start_line,
+                "end_line": s.end_line,
+                "via": s.via,
+            }
+            for s in items
+        ]
+
+    return {"targets": _describe_impacted(result.targets), "affected": _describe_impacted(result.affected)}

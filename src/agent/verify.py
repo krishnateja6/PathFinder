@@ -19,6 +19,7 @@ dropped or flagged rather than shown as fact."
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,12 +94,24 @@ def _ask_supported(sentence: str, citation: Citation, excerpt: str, llm: LLMClie
     return text.strip().upper().startswith("SUPPORTED")
 
 
-def verify_answer(answer_text: str, repo_root: Path, llm: LLMClient) -> list[VerifiedClaim]:
-    """Check every citation in `answer_text` against the actual source it names."""
+def verify_answer(
+    answer_text: str,
+    repo_root: Path,
+    llm: LLMClient,
+    excerpt_reader: Callable[[Citation], str | None] | None = None,
+) -> list[VerifiedClaim]:
+    """Check every citation in `answer_text` against the actual source it names.
+
+    `excerpt_reader` overrides how a citation's source excerpt is fetched —
+    the same override pattern as run_agent()'s `dispatch`. It exists for
+    callers with no local filesystem copy of the repo to read from (a
+    GitHub-ingested repo whose files live in Postgres, not on disk).
+    """
+    read_excerpt = excerpt_reader if excerpt_reader is not None else lambda citation: _read_excerpt(repo_root, citation)
     verified: list[VerifiedClaim] = []
     for sentence in _split_sentences(answer_text):
         for citation in extract_citations(sentence):
-            excerpt = _read_excerpt(repo_root, citation)
+            excerpt = read_excerpt(citation)
             if excerpt is None:
                 verified.append(VerifiedClaim(sentence, citation, exists=False, supported=None, excerpt=None))
                 continue

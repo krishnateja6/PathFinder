@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.agent.loop import AgentAnswer, run_agent
+from src.agent.loop import TOOL_SCHEMAS, AgentAnswer, run_agent
 from src.agent.tools import AgentContext
 from src.indexer.graph_builder import build_graph
 
@@ -161,3 +161,20 @@ def test_run_agent_default_dispatch_is_unchanged_when_no_override_given():
     answer = run_agent("Where is Calculator?", _ctx(), llm)
 
     assert answer.tool_calls[0].result[0]["file"] == "utils.py"
+
+
+def test_analyze_impact_is_registered_as_a_tool_and_reachable_via_the_loop():
+    schema_names = {schema["name"] for schema in TOOL_SCHEMAS}
+    assert "analyze_impact" in schema_names
+
+    llm = FakeLLMClient(
+        [
+            _tool_use(("analyze_impact", {"symbol": "Animal"}, "call_1")),
+            _text("Changing Animal affects run() and Dog."),
+        ]
+    )
+
+    answer = run_agent("What would break if I changed Animal?", _ctx(), llm)
+
+    affected_names = {a["qualified_name"] for a in answer.tool_calls[0].result["affected"]}
+    assert affected_names == {"run", "Dog"}

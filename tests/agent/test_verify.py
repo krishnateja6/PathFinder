@@ -111,3 +111,28 @@ def test_annotate_answer_is_a_no_op_when_everything_checks_out():
     verified = verify_answer(text, FIXTURES, llm)
 
     assert annotate_answer(text, verified) == text
+
+
+def test_verify_answer_uses_a_custom_excerpt_reader_when_given_one():
+    """A caller with no local filesystem copy of the repo (a GitHub-ingested
+    repo whose files live in Postgres) can override how excerpts are read."""
+    sentence = "Something happens at made_up.py:1-2."
+    llm = ScriptedLLM(["SUPPORTED"])
+
+    def fake_reader(citation):
+        assert citation.file == "made_up.py"
+        return "custom excerpt content"
+
+    verified = verify_answer(sentence, FIXTURES, llm, excerpt_reader=fake_reader)
+
+    assert verified[0].exists is True
+    assert verified[0].excerpt == "custom excerpt content"
+
+
+def test_verify_answer_custom_excerpt_reader_returning_none_marks_not_exists():
+    llm = ScriptedLLM([])
+
+    verified = verify_answer("Cites nothing.py:1.", FIXTURES, llm, excerpt_reader=lambda citation: None)
+
+    assert verified[0].exists is False
+    assert llm.calls == []

@@ -96,3 +96,20 @@ def test_find_callers_of_a_qualified_method(ctx):
 def test_find_callers_and_callees_empty_for_unknown_symbol(ctx):
     assert tools.find_callers(ctx, "nonexistent_symbol") == []
     assert tools.find_callees(ctx, "nonexistent_symbol") == []
+
+
+def test_analyze_impact_matches_hand_derived_graph(ctx):
+    """Same case hand-derived in tests/analysis/test_impact.py: changing
+    Animal affects run() (calls Animal.__init__ via Dog's inherited
+    constructor) and Dog (inherits from Animal)."""
+    result = tools.analyze_impact(ctx, "Animal")
+
+    assert {t["qualified_name"] for t in result["targets"]} == {"Animal", "Animal.__init__", "Animal.speak"}
+    affected_by_name = {a["qualified_name"]: a["via"] for a in result["affected"]}
+    assert affected_by_name == {"run": "calls", "Dog": "inherits"}
+
+
+def test_analyze_impact_empty_for_unknown_symbol(ctx):
+    result = tools.analyze_impact(ctx, "nonexistent_symbol")
+
+    assert result == {"targets": [], "affected": []}
