@@ -11,3 +11,5 @@ build/
 *.db
 .codeintel/
 .claude/settings.local.json
+node_modules/
+web/.vite/
