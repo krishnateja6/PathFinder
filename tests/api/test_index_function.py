@@ -16,6 +16,7 @@ from http.server import HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
+import psycopg
 import pytest
 
 from src.ingestion.github_client import RepoMetadata
@@ -210,6 +211,38 @@ def test_analyze_rejects_an_invalid_github_url(server):
     status, result = _request(httpd, "POST", "/api/analyze", {"github_url": "not a url"})
     assert status == 400
     assert result["code"] == "invalid_url"
+
+
+def test_analyze_validates_the_url_before_touching_the_database(server, monkeypatch):
+    """Regression: an invalid URL used to reach db.connect() first, so a
+    broken DATABASE_URL masked the real "invalid_url" error behind a raw
+    internal-error message about DNS/connection failure instead."""
+    httpd, module = server
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("db.connect() should not be called for an invalid URL")
+
+    monkeypatch.setattr(module.db, "connect", _explode)
+
+    status, result = _request(httpd, "POST", "/api/analyze", {"github_url": "https://github.com/just-a-user"})
+
+    assert status == 400
+    assert result["code"] == "invalid_url"
+
+
+def test_analyze_reports_a_clean_error_when_the_database_is_unreachable(server, monkeypatch):
+    """A valid request that can't reach Postgres should get a clear,
+    actionable message — not a raw internal error leaking connection
+    details (host, credentials) from the exception text."""
+    httpd, module = server
+    monkeypatch.setattr(
+        module.db, "connect", lambda: (_ for _ in ()).throw(psycopg.OperationalError("could not resolve host"))
+    )
+
+    status, result = _request(httpd, "POST", "/api/analyze", {"github_url": "https://github.com/test-acme/widget"})
+
+    assert status == 503
+    assert result["code"] == "db_unavailable"
 
 
 def test_query_endpoints_404_when_repo_not_analyzed_yet(server):

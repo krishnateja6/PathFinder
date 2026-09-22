@@ -41,6 +41,8 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import psycopg
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -69,7 +71,7 @@ from src.ingestion.github_client import (
 )
 from src.ingestion.pipeline import analyze_github_repo
 from src.ingestion.source_filter import RepoTooLargeError
-from src.ingestion.validator import InvalidGitHubURLError
+from src.ingestion.validator import InvalidGitHubURLError, parse_github_url
 from src.profile_scan.github_client import (
     DEFAULT_LIMIT as PROFILE_SCAN_LIMIT,
 )
@@ -181,6 +183,8 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             route(self, query, body)
+        except psycopg.OperationalError as exc:
+            self._send_json(503, {"error": f"could not connect to the database: {exc}", "code": "db_unavailable"})
         except Exception as exc:  # noqa: BLE001 - always return JSON, never an opaque error page
             self._send_json(500, {"error": f"internal error: {exc}"})
 
@@ -203,6 +207,14 @@ class handler(BaseHTTPRequestHandler):
         github_url = (body.get("github_url") or "").strip()
         if not github_url:
             self._send_json(400, {"error": "github_url is required"})
+            return
+
+        # Validate before touching the database at all: a malformed URL
+        # should never depend on — or be masked by — a DB connection issue.
+        try:
+            parse_github_url(github_url)
+        except InvalidGitHubURLError as exc:
+            self._send_json(400, {"error": str(exc), "code": "invalid_url"})
             return
 
         conn = db.connect()
